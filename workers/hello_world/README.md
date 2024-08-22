@@ -162,36 +162,22 @@ class GenerateHandler(EndpointHandler[InputData]):
         """
         return InputData.for_test()
 
-    async def handle_request(
-        self, request: web.Request
+    async def generate_client_response(
+        self, client_request: web.Request, model_response: ClientResponse
     ) -> Union[web.Response, web.StreamResponse]:
         """
-        defines how a response from model API is converted to a response to the client making the
-        request to the PyWorker
+        defines how to convert a model API response to a response to PyWorker client
         """
-        data = await request.json()
-        try:
-            auth_data, payload = self.get_data_from_request(data)
-        except JsonDataException as e:
-            return web.json_response(data=e.message, status=422)
-        try:
-            # backend will be defined bellow
-            match await backend.handle_request(
-                handler=self, auth_data=auth_data, payload=payload, request=request
-            ):
-                # format is (http_status_code, response)
-                case (_, None):
-                    # This happens if client closed connection before model API call completed
-                    return web.Response(status=500)
-                case (200, response):
-                    log.debug("Success: got code 200 from model API")
-                    return web.json_response(data=await response.json())
-                case (code, response):
-                    log.debug(f"Error: got code {code} from model API")
-                    return web.Response(body=response.content, status=code)
-        except Exception as e:
-            log.debug(f"Exception in main handler loop {e}")
-            return web.Response(status=500)
+        _ = client_request
+        match model_response.status:
+            case 200:
+                log.debug("SUCCESS")
+                data = await model_response.json()
+                return web.json_response(data=data)
+            case code:
+                log.debug("SENDING RESPONSE: ERROR: unknown code")
+                return web.Response(status=code)
+
 
 ```
 
@@ -199,37 +185,39 @@ We also handle `GenerateStreamHandler` for streaming responses. It is identical 
 the endpoint name and how we create a web response, as it is a streaming response:
 
 ```python
-class GenerateStreamHandler(GenerateHandler):
+class GenerateStreamHandler(EndpointHandler[InputData]):
     @property
     def endpoint(self) -> str:
         return "/generate_stream"
 
-    async def handle_request(
-        self, request: web.Request
+    @classmethod
+    def payload_cls(cls) -> Type[InputData]:
+        return InputData
+
+    def generate_payload_json(self, payload: InputData) -> Dict[str, Any]:
+        return dataclasses.asdict(payload)
+
+    def make_benchmark_payload(self) -> InputData:
+        return InputData.for_test()
+
+    async def generate_client_response(
+        self, client_request: web.Request, model_response: ClientResponse
     ) -> Union[web.Response, web.StreamResponse]:
-        data = await request.json()
-        auth_data, payload = self.get_data_from_request(data)
-        try:
-            match await backend.handle_request(
-                handler=self, auth_data=auth_data, payload=payload, request=request
-            ):
-                case (_, None):
-                    return web.Response(status=500)
-                case (200, api_response):
-                    response = web.StreamResponse()
-                    response.content_type = "text/event-stream"
-                    # be sure to not set any headers after response.prepare() is called
-                    await response.prepare(request)
-                    async for chunk in api_response.content:
-                        await response.write(chunk)
-                    await response.write_eof()
-                    return response
-                case (code, response):
-                    log.debug(f"Error: got code {code} from model API")
-                    return web.Response(body=response.content, status=code)
-        except Exception as e:
-            log.debug(f"Exception in main handler loop {e}")
-            return web.Response(status=500)
+        match model_response.status:
+            case 200:
+                log.debug("Streaming response...")
+                res = web.StreamResponse()
+                res.content_type = "text/event-stream"
+                await res.prepare(client_request)
+                async for chunk in model_response.content:
+                    await res.write(chunk)
+                await res.write_eof()
+                log.debug("Done streaming response")
+                return res
+            case code:
+                log.debug("SENDING RESPONSE: ERROR: unknown code")
+                return web.Response(status=code)
+
 
 ```
 
@@ -279,8 +267,8 @@ async def handle_healthcheck(_: web.Request):
     return web.Response(body=healthcheck_res.content, status=healthcheck_res.status)
 
 routes = [
-    web.post("/generate", GenerateHandler().handle_request),
-    web.post("/generate_stream", GenerateStreamHandler().handle_request),
+    web.post("/generate", backend.create_handler(GenerateHandler())),
+    web.post("/generate_stream", backend.create_handler(GenerateStreamHandler())),
     web.get("/ping", handle_ping),
     web.get("/healthcheck", handle_healthcheck),
 ]

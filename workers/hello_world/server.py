@@ -18,7 +18,7 @@ from typing import Dict, Any, Union, Type
 from aiohttp import web, ClientResponse
 
 from lib.backend import Backend, LogAction
-from lib.data_types import EndpointHandler, JsonDataException
+from lib.data_types import EndpointHandler
 from lib.server import start_server
 from .data_types import InputData
 
@@ -43,7 +43,7 @@ log = logging.getLogger(__file__)
 
 # This class is the implementer for the '/generate' endpoint of model API
 @dataclasses.dataclass
-class GenerateHandler(EndpointHandler):
+class GenerateHandler(EndpointHandler[InputData]):
 
     @property
     def endpoint(self) -> str:
@@ -68,59 +68,52 @@ class GenerateHandler(EndpointHandler):
         """
         return InputData.for_test()
 
-    async def generate_response(
-        self, request: web.Request, response: ClientResponse
+    async def generate_client_response(
+        self, client_request: web.Request, model_response: ClientResponse
     ) -> Union[web.Response, web.StreamResponse]:
         """
         defines how to convert a model API response to a response to PyWorker client
         """
-        _ = request
-        match response.status:
+        _ = client_request
+        match model_response.status:
             case 200:
                 log.debug("SUCCESS")
-                data = await response.json()
+                data = await model_response.json()
                 return web.json_response(data=data)
             case code:
                 log.debug("SENDING RESPONSE: ERROR: unknown code")
                 return web.Response(status=code)
-
-    async def handle_request(
-        self, request: web.Request
-    ) -> Union[web.Response, web.StreamResponse]:
-        """
-        defines how a response from model API is converted to a response to the client making the
-        request to the pyworker
-        """
-        data = await request.json()
-        auth_data, payload = self.get_data_from_request(data)
-        try:
-            return await backend.handle_request(
-                handler=self, auth_data=auth_data, payload=payload, request=request
-            )
-        except Exception as e:
-            log.debug(f"Exception in main handler loop {e}")
-            return web.Response(status=500)
 
 
 # This is the same as GenerateHandler, except that it calls a streaming endpoint of the model API and streams the
 # response, which itself is streaming, back to the client.
 # it is nearly identical to handler as above, but it calls a different model API endpoint and it streams the
 # streaming response from model API to client
-class GenerateStreamHandler(GenerateHandler):
+class GenerateStreamHandler(EndpointHandler[InputData]):
     @property
     def endpoint(self) -> str:
         return "/generate_stream"
 
-    async def generate_response(
-        self, request: web.Request, response: ClientResponse
+    @classmethod
+    def payload_cls(cls) -> Type[InputData]:
+        return InputData
+
+    def generate_payload_json(self, payload: InputData) -> Dict[str, Any]:
+        return dataclasses.asdict(payload)
+
+    def make_benchmark_payload(self) -> InputData:
+        return InputData.for_test()
+
+    async def generate_client_response(
+        self, client_request: web.Request, model_response: ClientResponse
     ) -> Union[web.Response, web.StreamResponse]:
-        match response.status:
+        match model_response.status:
             case 200:
                 log.debug("Streaming response...")
                 res = web.StreamResponse()
                 res.content_type = "text/event-stream"
-                await res.prepare(request)
-                async for chunk in response.content:
+                await res.prepare(client_request)
+                async for chunk in model_response.content:
                     await res.write(chunk)
                 await res.write_eof()
                 log.debug("Done streaming response")
@@ -128,22 +121,6 @@ class GenerateStreamHandler(GenerateHandler):
             case code:
                 log.debug("SENDING RESPONSE: ERROR: unknown code")
                 return web.Response(status=code)
-
-    async def handle_request(
-        self, request: web.Request
-    ) -> Union[web.Response, web.StreamResponse]:
-        data = await request.json()
-        try:
-            auth_data, payload = self.get_data_from_request(data)
-        except JsonDataException as e:
-            return web.json_response(data=e.message, status=422)
-        try:
-            return await backend.handle_request(
-                handler=self, auth_data=auth_data, payload=payload, request=request
-            )
-        except Exception as e:
-            log.debug(f"Exception in main handler loop {e}")
-            return web.Response(status=500)
 
 
 # This is the backend instance of pyworker. Only one must be made which uses EndpointHandlers to process
@@ -179,8 +156,8 @@ async def handle_healthcheck(_: web.Request):
 
 
 routes = [
-    web.post("/generate", GenerateHandler().handle_request),
-    web.post("/generate_stream", GenerateStreamHandler().handle_request),
+    web.post("/generate", backend.create_handler(GenerateHandler())),
+    web.post("/generate_stream", backend.create_handler(GenerateStreamHandler())),
     web.get("/ping", handle_ping),
     web.get("/healthcheck", handle_healthcheck),
 ]

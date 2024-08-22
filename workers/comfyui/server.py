@@ -8,7 +8,7 @@ from aiohttp import web, ClientResponse
 from anyio import open_file
 
 from lib.backend import Backend, LogAction
-from lib.data_types import EndpointHandler, JsonDataException
+from lib.data_types import EndpointHandler
 from lib.server import start_server
 from .data_types import DefaultComfyWorkflowData, CustomComfyWorkflowData
 
@@ -31,7 +31,7 @@ logging.basicConfig(
 log = logging.getLogger(__file__)
 
 
-async def generate_response(
+async def generate_client_response(
     request: web.Request, response: ClientResponse
 ) -> Union[web.Response, web.StreamResponse]:
     _ = request
@@ -63,22 +63,6 @@ async def generate_response(
             return web.Response(status=code)
 
 
-async def handle_workflow(self: EndpointHandler, request: web.Request):
-    data = await request.json()
-    try:
-        auth_data, payload = self.get_data_from_request(data)
-    except JsonDataException as e:
-        return web.json_response(data=e.message, status=422)
-    log.debug(f"got request, {auth_data.reqnum}")
-    try:
-        return await backend.handle_request(
-            handler=self, auth_data=auth_data, payload=payload, request=request
-        )
-    except Exception as e:
-        log.debug(f"Exception in main handler loop {e}")
-        return web.Response(status=500)
-
-
 @dataclasses.dataclass
 class DefaultComfyWorkflowHandler(EndpointHandler[DefaultComfyWorkflowData]):
 
@@ -93,15 +77,10 @@ class DefaultComfyWorkflowHandler(EndpointHandler[DefaultComfyWorkflowData]):
     def make_benchmark_payload(self) -> DefaultComfyWorkflowData:
         return DefaultComfyWorkflowData.for_test()
 
-    async def generate_response(
-        self, request: web.Request, response: ClientResponse
+    async def generate_client_response(
+        self, client_request: web.Request, model_response: ClientResponse
     ) -> Union[web.Response, web.StreamResponse]:
-        return await generate_response(request, response)
-
-    async def handle_request(
-        self, request: web.Request
-    ) -> Union[web.Response, web.StreamResponse]:
-        return await handle_workflow(self, request=request)
+        return await generate_client_response(client_request, model_response)
 
 
 @dataclasses.dataclass
@@ -118,15 +97,10 @@ class CustomComfyWorkflowHandler(EndpointHandler[CustomComfyWorkflowData]):
     def make_benchmark_payload(self) -> CustomComfyWorkflowData:
         return CustomComfyWorkflowData.for_test()
 
-    async def generate_response(
-        self, request: web.Request, response: ClientResponse
+    async def generate_client_response(
+        self, client_request: web.Request, model_response: ClientResponse
     ) -> Union[web.Response, web.StreamResponse]:
-        return await generate_response(request, response)
-
-    async def handle_request(
-        self, request: web.Request
-    ) -> Union[web.Response, web.StreamResponse]:
-        return await handle_workflow(self, request=request)
+        return await generate_client_response(client_request, model_response)
 
 
 backend = Backend(
@@ -152,8 +126,8 @@ async def handle_ping(_):
 
 
 routes = [
-    web.post("/prompt", DefaultComfyWorkflowHandler().handle_request),
-    web.post("/custom-workflow", CustomComfyWorkflowHandler().handle_request),
+    web.post("/prompt", backend.create_handler(DefaultComfyWorkflowHandler())),
+    web.post("/custom-workflow", backend.create_handler(CustomComfyWorkflowHandler())),
     web.get("/ping", handle_ping),
 ]
 

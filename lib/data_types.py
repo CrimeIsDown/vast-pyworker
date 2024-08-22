@@ -1,4 +1,5 @@
 import time
+import logging
 from dataclasses import dataclass, field
 from enum import Enum
 from abc import ABC, abstractmethod
@@ -13,6 +14,8 @@ import psutil
 type variable representing an incoming payload to pyworker that will used to calculate load and will then
 be forwarded to the model
 """
+
+log = logging.getLogger(__file__)
 
 
 class JsonDataException(Exception):
@@ -111,21 +114,11 @@ class EndpointHandler(ABC, Generic[ApiPayload_T]):
         pass
 
     @abstractmethod
-    async def generate_response(
-        self, request: web.Request, response: ClientResponse
+    async def generate_client_response(
+        self, client_request: web.Request, model_response: ClientResponse
     ) -> Union[web.Response, web.StreamResponse]:
         """
         defines how to convert a model API response to a response to PyWorker client
-        """
-        pass
-
-    @abstractmethod
-    async def handle_request(
-        self, request: web.Request
-    ) -> Union[web.Response, web.StreamResponse]:
-        """
-        defines how a request is handled, it should return the Response that is forwarded
-        by the pyworker to the client
         """
         pass
 

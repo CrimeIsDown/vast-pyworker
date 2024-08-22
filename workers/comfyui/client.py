@@ -63,7 +63,6 @@ def call_custom_workflow_for_sd3(
     )
     message = response.json()
     url = message["url"]
-    print(f"url: {url}")
     auth_data = dict(
         signature=message["signature"],
         cost=message["cost"],

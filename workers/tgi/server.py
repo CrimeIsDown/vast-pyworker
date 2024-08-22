@@ -6,7 +6,7 @@ import dataclasses
 from aiohttp import web, ClientResponse
 
 from lib.backend import Backend, LogAction
-from lib.data_types import EndpointHandler, JsonDataException
+from lib.data_types import EndpointHandler
 from lib.server import start_server
 from .data_types import InputData
 
@@ -40,52 +40,42 @@ class GenerateHandler(EndpointHandler[InputData]):
     def make_benchmark_payload(self) -> InputData:
         return InputData.for_test()
 
-    async def generate_response(
-        self, request: web.Request, response: ClientResponse
+    async def generate_client_response(
+        self, client_request: web.Request, model_response: ClientResponse
     ) -> Union[web.Response, web.StreamResponse]:
-        _ = request
-        match response.status:
+        _ = client_request
+        match model_response.status:
             case 200:
                 log.debug("SUCCESS")
-                data = await response.json()
+                data = await model_response.json()
                 return web.json_response(data=data)
             case code:
                 log.debug("SENDING RESPONSE: ERROR: unknown code")
                 return web.Response(status=code)
 
-    async def handle_request(
-        self, request: web.Request
-    ) -> Union[web.Response, web.StreamResponse]:
-        data = await request.json()
-        try:
-            auth_data, payload = self.get_data_from_request(data)
-        except JsonDataException as e:
-            return web.json_response(data=e.message, status=422)
-        log.debug(f"got request, {auth_data.reqnum}")
-        try:
-            return await backend.handle_request(
-                handler=self, auth_data=auth_data, payload=payload, request=request
-            )
-        except Exception as e:
-            log.debug(f"Exception in main handler loop {e}")
-            return web.Response(status=500)
 
-
-class GenerateStreamHandler(GenerateHandler):
+class GenerateStreamHandler(EndpointHandler[InputData]):
     @property
     def endpoint(self) -> str:
         return "/generate_stream"
 
-    async def generate_response(
-        self, request: web.Request, response: ClientResponse
+    @classmethod
+    def payload_cls(cls) -> Type[InputData]:
+        return InputData
+
+    def make_benchmark_payload(self) -> InputData:
+        return InputData.for_test()
+
+    async def generate_client_response(
+        self, client_request: web.Request, model_response: ClientResponse
     ) -> Union[web.Response, web.StreamResponse]:
-        match response.status:
+        match model_response.status:
             case 200:
                 log.debug("Streaming response...")
                 res = web.StreamResponse()
                 res.content_type = "text/event-stream"
-                await res.prepare(request)
-                async for chunk in response.content:
+                await res.prepare(client_request)
+                async for chunk in model_response.content:
                     await res.write(chunk)
                 await res.write_eof()
                 log.debug("Done streaming response")
@@ -93,20 +83,6 @@ class GenerateStreamHandler(GenerateHandler):
             case code:
                 log.debug("SENDING RESPONSE: ERROR: unknown code")
                 return web.Response(status=code)
-
-    async def handle_request(
-        self, request: web.Request
-    ) -> Union[web.Response, web.StreamResponse]:
-        data = await request.json()
-        auth_data, payload = self.get_data_from_request(data)
-        log.debug(f"got request, {auth_data.reqnum}")
-        try:
-            return await backend.handle_request(
-                handler=self, auth_data=auth_data, payload=payload, request=request
-            )
-        except Exception as e:
-            log.debug(f"Exception in main handler loop {e}")
-            return web.Response(status=500)
 
 
 backend = Backend(
@@ -130,8 +106,8 @@ async def handle_ping(_):
 
 
 routes = [
-    web.post("/generate", GenerateHandler().handle_request),
-    web.post("/generate_stream", GenerateStreamHandler().handle_request),
+    web.post("/generate", backend.create_handler(GenerateHandler())),
+    web.post("/generate_stream", backend.create_handler(GenerateStreamHandler())),
     web.get("/ping", handle_ping),
 ]
 

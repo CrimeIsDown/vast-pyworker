@@ -6,7 +6,7 @@ import subprocess
 import dataclasses
 import logging
 from asyncio import wait, sleep, gather, Semaphore, FIRST_COMPLETED, create_task
-from typing import Tuple, Awaitable, NoReturn, List, Union
+from typing import Tuple, Awaitable, NoReturn, List, Union, Callable
 from functools import cached_property
 
 from anyio import open_file
@@ -23,6 +23,7 @@ from lib.data_types import (
     EndpointHandler,
     LogAction,
     ApiPayload_T,
+    JsonDataException,
 )
 
 MSG_HISTORY_LEN = 100
@@ -81,14 +82,32 @@ class Backend:
         log.debug(f"starting session with {self.model_server_url}")
         return ClientSession(self.model_server_url)
 
-    async def handle_request(
+    def create_handler(
         self,
         handler: EndpointHandler[ApiPayload_T],
-        auth_data: AuthData,
-        payload: ApiPayload_T,
+    ) -> Callable[[web.Request], Awaitable[Union[web.Response, web.StreamResponse]]]:
+        async def handler_fn(
+            request: web.Request,
+        ) -> Union[web.Response, web.StreamResponse]:
+            return await self.__handle_request(handler=handler, request=request)
+
+        return handler_fn
+
+    #######################################Private#######################################
+    async def __handle_request(
+        self,
+        handler: EndpointHandler[ApiPayload_T],
         request: web.Request,
     ) -> Union[web.Response, web.StreamResponse]:
         """use this function to forward requests to the model endpoint"""
+        try:
+            data = await request.json()
+            auth_data, payload = handler.get_data_from_request(data)
+        except JsonDataException as e:
+            return web.json_response(data=e.message, status=422)
+        except json.JSONDecodeError:
+            return web.json_response(dict(error="invalid JSON"), status=422)
+        workload = payload.count_workload()
 
         async def cancel_api_call_if_disconnected() -> web.Response:
             await request.wait_for_disconnection()
@@ -97,6 +116,7 @@ class Backend:
             return web.Response(status=500)
 
         async def make_request() -> Union[web.Response, web.StreamResponse]:
+            log.debug(f"got request, {auth_data.reqnum}")
             self.metrics._request_start(workload=workload, reqnum=auth_data.reqnum)
             if self.allow_parallel_requests is False:
                 log.debug(f"Waiting to aquire Sem for reqnum:{auth_data.reqnum}")
@@ -118,7 +138,7 @@ class Backend:
                         ]
                     )
                 )
-                res = await handler.generate_response(request, response)
+                res = await handler.generate_client_response(request, response)
                 self.metrics._request_end(
                     workload=workload,
                     req_response_time=time.time() - start_time,
@@ -139,25 +159,25 @@ class Backend:
         if self.__check_signature(auth_data) is False:
             return web.Response(status=401)
 
-        workload = payload.count_workload()
-
-        done, pending = await wait(
-            [
-                create_task(make_request()),
-                create_task(cancel_api_call_if_disconnected()),
-            ],
-            return_when=FIRST_COMPLETED,
-        )
-        [task.cancel() for task in pending]
-        return done.pop().result()
+        try:
+            done, pending = await wait(
+                [
+                    create_task(make_request()),
+                    create_task(cancel_api_call_if_disconnected()),
+                ],
+                return_when=FIRST_COMPLETED,
+            )
+            [task.cancel() for task in pending]
+            return done.pop().result()
+        except Exception as e:
+            log.debug(f"Exception in main handler loop {e}")
+            return web.Response(status=500)
 
     async def _start_tracking(self) -> None:
         await gather(self.__read_logs(), self.metrics._send_metrics_loop())
 
     def backend_errored(self, msg: str) -> None:
         self.metrics._model_errored(msg)
-
-    #######################################Private#######################################
 
     async def __call_api(
         self, handler: EndpointHandler[ApiPayload_T], payload: ApiPayload_T

@@ -28,7 +28,7 @@ def get_url() -> str:
 @dataclass
 class Metrics:
     last_metric_update: float = 0.0
-    last_reported_load: float = 0.0
+    update_pending: bool = False
     id: int = field(default_factory=lambda: int(os.environ["CONTAINER_ID"]))
     report_addr: str = field(default_factory=lambda: os.environ["REPORT_ADDR"])
     url: str = field(default_factory=get_url)
@@ -55,6 +55,7 @@ class Metrics:
         self.model_metrics.workload_pending -= workload
         self.model_metrics.requests_working.discard(reqnum)
         self.model_metrics.cur_perf = workload / req_response_time
+        self.update_pending = True
 
     def _request_errored(self, workload: float, reqnum: int) -> None:
         """
@@ -77,13 +78,10 @@ class Metrics:
             await sleep(METRICS_UPDATE_INTERVAL)
             elapsed = time.time() - self.last_metric_update
             if self.system_metrics.model_is_loaded is False and elapsed >= 10:
-                log.debug(f"sending loading model metrics after {elapsed}")
+                log.debug(f"sending loading model metrics after {int(elapsed)}s wait")
                 self.__send_metrics_and_reset(elapsed)
-            elif (
-                self.last_reported_load != self.model_metrics.workload_processing
-                or elapsed > 10
-            ):
-                log.debug(f"sending loaded model metrics after {elapsed}")
+            elif self.update_pending or elapsed > 10:
+                log.debug(f"sending loaded model metrics after {int(elapsed)}s wait")
                 self.__send_metrics_and_reset(elapsed)
 
     def _model_loaded(self, max_throughput: float) -> None:
@@ -145,7 +143,7 @@ class Metrics:
 
         self.system_metrics.update_disk_usage()
         send_data()
-        self.last_reported_load = self.model_metrics.workload_processing
+        self.update_pending = False
         self.model_metrics.reset()
         self.system_metrics.reset()
         self.last_metric_update = time.time()
