@@ -47,9 +47,9 @@ env | grep _ >> /etc/environment;
 
 if [ ! -d "$ENV_PATH" ]
 then
-    apt install -y python3.10-venv
+    python3 -m venv -h > /dev/null || apt install -y python3.10-venv
     echo "setting up venv"
-    git clone -b pyworker_v2 https://github.com/nader-gator/vast-pyworker "$SERVER_DIR"
+    git clone -b whisper https://github.com/CrimeIsDown/vast-pyworker "$SERVER_DIR"
 
     python3 -m venv "$WORKSPACE_DIR/worker-env"
     source "$WORKSPACE_DIR/worker-env/bin/activate"

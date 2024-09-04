@@ -296,5 +296,5 @@ You can then run the following command from the root of this repo to load test e
 
 ```sh
 # sends 1000 requests at the rate of 0.5 requests per second
-python3 workers.hello_world.test_load -n 1000 -rps 0.5 -k "$API_KEY" -e "$ENDPOINT_GROUP_NAME"
+python3 -m workers.hello_world.test_load -n 1000 -rps 0.5 -k "$API_KEY" -e "$ENDPOINT_GROUP_NAME"
 ```
